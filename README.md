@@ -51,27 +51,27 @@ This project demonstrates rapid endpoint triage and proactive threat hunting usi
 
 **Hex/ASCII Array Reassembly (4:13:38 PM - 4:13:52 PM):**
 
-**Detection:** Command lines with low alphanumeric ratios (45%–56%).
+  **Detection:** Command lines with low alphanumeric ratios (45%–56%).
 
-**Mechanism:** **Base-16** hexadecimal strings and **ASCII** decimal arrays converted at runtime via [Char][Convert]::ToInt16(), resolved through environment variable indexing ($env:ComSpec[4,15,25] to build iex).
+  **Mechanism:** **Base-16** hexadecimal strings and **ASCII** decimal arrays converted at runtime via [Char][Convert]::ToInt16(), resolved through environment variable indexing ($env:ComSpec[4,15,25] to build iex).
 
 **Octal & Binary Encoding (4:14:33 PM - 4:14:51 PM):**
 
-**Detection:** String payloads exceeding 1000 bytes with 75% zeros and ones.
+  **Detection:** String payloads exceeding 1000 bytes with 75% zeros and ones.
 
-**Mechanism:** Multi-delimiter string splitting (-split 'o' -split '&' -split 'r') piping into base-2/base-8 runtime converters.
+  **Mechanism:** Multi-delimiter string splitting (-split 'o' -split '&' -split 'r') piping into base-2/base-8 runtime converters.
 
 **SecureString / Crypto Streams (4:15:23 PM):**
 
-**Detection:** 500+ consecutive **Base64** characters and long command line alerts.
+  **Detection:** 500+ consecutive **Base64** characters and long command line alerts.
 
-**Mechanism:** Decryption via [Runtime.InteropServices.Marshal]::PtrToStringBSTR() combined with AES-encrypted SecureString structures.
+  **Mechanism:** Decryption via [Runtime.InteropServices.Marshal]::PtrToStringBSTR() combined with AES-encrypted SecureString structures.
 
 **Special Character & Whitespace Insertion (4:15:43 PM - 4:16:25 PM):**
 
-**Detection:** Alphanumeric symbol ratios dropping as low as 3% to 6%.
+  **Detection:** Alphanumeric symbol ratios dropping as low as 3% to 6%.
 
-**Mechanism:** Variable substitution and XOR operations (-BXor "0x5d"), using character array indexing (''.IndexOf.ToString()[106,482,184]) to dynamically construct iex without invoking raw string literals.
+  **Mechanism:** Variable substitution and XOR operations (-BXor "0x5d"), using character array indexing (''.IndexOf.ToString()[106,482,184]) to dynamically construct iex without invoking raw string literals.
 
 ---
 
