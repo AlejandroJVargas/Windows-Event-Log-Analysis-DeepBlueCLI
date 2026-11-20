@@ -1,85 +1,98 @@
+# Windows Event Log Threat Hunting (DeepBlueCLI)
 
-# Windows Event Log Threat Hunting & Forensics (DeepBlueCLI)
+I used **DeepBlueCLI** (a PowerShell tool by SANS) to triage Windows `.evtx` logs that contain real attack activity: password spraying, Mimikatz credential dumping, obfuscated PowerShell, and event log tampering. For each case I ran the tool, read the alerts, and checked the event IDs and timestamps behind them.
 
-## 1. Executive Summary
-This project demonstrates rapid endpoint triage and proactive threat hunting using **DeepBlueCLI** and **PowerShell** across Windows Security, System, and Sysmon Event Logs (`.evtx`). The investigation analyzes real-world attack artifacts—including credential harvesting, brute-force password spraying, encoded command execution, and defense evasion attempts—mapped directly to the **MITRE ATT&CK** matrix.
-
----
-
-## 2. MITRE ATT&CK Mapping
-
-| Tactic | Technique ID | Technique Name | Target Event ID | Detection Scope |
-| :--- | :--- | :--- | :--- | :--- |
-| **Credential Access** | `T1110.003` | Password Spraying | Security `4625` | Repeated failed logon bursts across multiple accounts. |
-| **Credential Access** | `T1003.001` | LSASS Memory Dumping (Mimikatz) | Sysmon `1`, `10` | Suspicious process access targeting `lsass.exe`. |
-| **Execution** | `T1059.001` | PowerShell Obfuscation & Encoded Commands | PowerShell `4104` / `4688` | Base64-encoded strings and suspicious CLI arguments. |
-| **Defense Evasion** | `T1070.001` | Clear Windows Event Logs | Security `1102` / System `104` | Audit log clearing to destroy digital evidence. |
-| **Defense Evasion** | `T1562.002` | Disable Windows Event Logs | Security `7040` | EventLog service configuration state changes. |
+**Data:** public attack sample logs (the `.evtx` samples distributed with DeepBlueCLI and the EVTX-ATTACK-SAMPLES collection).
+**Tools:** DeepBlueCLI, PowerShell, Windows Event Viewer.
 
 ---
 
-## 3. Investigation & Artifact Analysis
+## MITRE ATT&CK
 
-### 3.1. Password Spraying & Brute Force Detection
+| Technique | ID | Log / Event IDs |
+| :--- | :--- | :--- |
+| Password Spraying | `T1110.003` | Security `4648`, `4625` |
+| OS Credential Dumping: LSASS (Mimikatz) | `T1003.001` | Security `4673` (SeDebugPrivilege) |
+| PowerShell (obfuscated / encoded commands) | `T1059.001` | PowerShell `4104` |
+| Clear Windows Event Logs | `T1070.001` | Security `1102`, System `104` |
+| Impair Defenses: Disable Windows Event Logging | `T1562.002` | System `7040` |
+
+---
+
+## 1. Password spraying
+
 ```powershell
 .\DeepBlue.ps1 .\evtx-attack-samples\Security\password-spray-4625.evtx
 ```
 
-**Log Clearing Pre-check:** **Event 1102** triggered at **4/30/2019 4:27:00 PM**, indicating the Security log was intentionally cleared immediately prior to the spray.
+- **4/30/2019 4:27:00 PM**: Event **1102**, the Security log was cleared just before the attack.
+- **4/30/2019 4:27:40 PM**: a burst of Event **4648** (logon with explicit credentials), many accounts tried in a few seconds. That pattern (one password, many users) is password spraying, not a normal user mistyping.
 
-**Exploitation Artifact:** At **4/30/2019 4:27:40 PM**, **Event 4648** (A logon was attempted using explicit credentials) was detected in rapid succession, identifying an automated password spraying sequence against domain accounts.
+![Password spray](evidence/Password-spary.png)
 
 ---
 
-### 3.2 Credential Dumping Via Mimikatz
+## 2. Mimikatz credential dumping
+
 ```powershell
 .\DeepBlue.ps1 .\evtx\mimikatz-privesc-hashdump.evtx
 ```
 
-**Anti-Forensics:** **Event 1102** logged at **4/30/2019 3:08:22 PM**, representing manual audit log destruction.
+- **4/30/2019 3:08:22 PM**: Event **1102**, log cleared again.
+- **4/30/2019 3:08:29 PM** (7 seconds later): Event **4673** showing use of **SeDebugPrivilege**. Mimikatz needs that privilege to read `lsass.exe` memory and dump credentials.
 
-**Privilege Abuse:** Seven seconds later (**4/30/2019 3:08:29 PM**), **Event 4673** (A privileged service was called) flagged **SeDebugPrivilege** abuse commonly leveraged by **Mimikatz** to access lsass.exe memory spaces for credential extraction.
+Clearing the log right before using SeDebugPrivilege is a strong sign this was deliberate.
+
+![Mimikatz](evidence/mimikatz%20privesc%20hashdump.png)
 
 ---
 
-### 3.3 Obfuscated PowerShell Execution (Invoke-Obfuscation)
+## 3. Obfuscated PowerShell (Invoke-Obfuscation)
+
 ```powershell
 .\DeepBlue.ps1 .\evtx\Powershell-Invoke-Obfuscation-encoding-menu.evtx
 ```
 
-**Analysis of Script Block Logging (Event ID 4104)** on **8/30/2017** revealed an array of progressive obfuscation layers generated via **Invoke-Obfuscation**:
+Script block logging (Event **4104**) on **8/30/2017** shows the same command being obfuscated in several different ways within a few minutes:
 
-**Hex/ASCII Array Reassembly (4:13:38 PM - 4:13:52 PM):**
+| Time | Technique | Why DeepBlueCLI flagged it |
+| :--- | :--- | :--- |
+| 4:13:38 – 4:13:52 PM | Hex and ASCII arrays converted back at runtime; `iex` built from `$env:ComSpec[4,15,25]` | Only 45–56% of the characters are letters/numbers |
+| 4:14:33 – 4:14:51 PM | Binary and octal strings split with `-split 'o' -split '&' -split 'r'` | Over 1,000 bytes, 75% zeros and ones |
+| 4:15:23 PM | AES-encrypted SecureString decoded with `PtrToStringBSTR()` | 500+ consecutive Base64 characters |
+| 4:15:43 – 4:16:25 PM | Special characters, `-BXor "0x5d"`, `iex` built from character indexes | Only 3–6% letters/numbers |
 
-  **Detection:** Command lines with low alphanumeric ratios (45%–56%).
+The goal of all of them is the same: hide the word `iex` (Invoke-Expression) and the real command from simple string matching.
 
-  **Mechanism:** **Base-16** hexadecimal strings and **ASCII** decimal arrays converted at runtime via [Char][Convert]::ToInt16(), resolved through environment variable indexing ($env:ComSpec[4,15,25] to build iex).
-
-**Octal & Binary Encoding (4:14:33 PM - 4:14:51 PM):**
-
-  **Detection:** String payloads exceeding 1000 bytes with 75% zeros and ones.
-
-  **Mechanism:** Multi-delimiter string splitting (-split 'o' -split '&' -split 'r') piping into base-2/base-8 runtime converters.
-
-**SecureString / Crypto Streams (4:15:23 PM):**
-
-  **Detection:** 500+ consecutive **Base64** characters and long command line alerts.
-
-  **Mechanism:** Decryption via [Runtime.InteropServices.Marshal]::PtrToStringBSTR() combined with AES-encrypted SecureString structures.
-
-**Special Character & Whitespace Insertion (4:15:43 PM - 4:16:25 PM):**
-
-  **Detection:** Alphanumeric symbol ratios dropping as low as 3% to 6%.
-
-  **Mechanism:** Variable substitution and XOR operations (-BXor "0x5d"), using character array indexing (''.IndexOf.ToString()[106,482,184]) to dynamically construct iex without invoking raw string literals.
+![Obfuscation 1](evidence/powershell%20obfuscate%20pt1.png)
+![Obfuscation 2](evidence/powershell%20obfuscate%20pt2.png)
+![Obfuscation 3](evidence/powershell%20obfuscate%20pt3.png)
+![Obfuscation 4](evidence/powershell%20obfuscate%20pt4.png)
+![Obfuscation 5](evidence/powershell%20obfuscate%20pt5.png)
+![Obfuscation 6](evidence/powershell%20obfuscate%20pt6.png)
+![Obfuscation 7](evidence/powershell%20obfuscate%20pt7.png)
+![Obfuscation 8](evidence/powershell%20obfuscate%20pt8.png)
+![Obfuscation 9](evidence/powershell%20obfuscate%20pt9.png)
 
 ---
 
-### 3.4 Defense Evasion via Event Log Service Disruption
+## 4. Event log tampering
+
 ```powershell
 .\DeepBlue.ps1 .\evtx\disablestop-eventlog.evtx
 ```
 
-**Log Purging:** **Event 104** detected in the System log at **4/27/2019 6:04:25 PM**, capturing an explicit log wipe.
+- **4/27/2019 6:04:25 PM**: Event **104** in the System log, a log was cleared.
+- **6:04:32 – 6:04:51 PM**: Event **7040** in the System log, the Windows Event Log service start type changed from Auto Start to Disabled, and then the service was stopped.
 
-**Service Tampering:** **Event 7040** observed between **6:04:32 PM and 6:04:51 PM**, registering a start-type change in the Windows Event Log service (from Auto Start to Disabled), followed by service termination to halt telemetry collection.
+After this, the machine stops recording events, so anything the attacker does next is invisible. In a real SOC, a 7040 on the Event Log service should be a high-priority alert on its own.
+
+![Event log tampering](evidence/disable%20stop%20eventlog.png)
+
+---
+
+## Detection idea
+
+Three of the four cases include **log clearing (1102 / 104)** right before or during the attack. An alert on 1102, 104 and 7040 (Event Log service) would have caught all of them early, even without knowing the specific attack.
+
+**Author:** Alejandro José Vargas
